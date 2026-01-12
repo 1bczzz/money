@@ -1,0 +1,565 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Plus, 
+  Calendar, 
+  PieChart as PieChartIcon, 
+  List, 
+  ChevronLeft, 
+  ChevronRight, 
+  X,
+  Trash2,
+  Delete,
+  Settings,
+  AlertTriangle,
+  CreditCard,
+  Banknote,
+  FileText,
+  Wallet,
+  Download,
+  Filter,
+  Lock,
+  ShieldCheck,
+  KeyRound,
+  ScanFace,
+  ArrowUpRight,
+  ArrowDownLeft,
+  Share,
+  Check
+} from 'lucide-react';
+import { 
+  PieChart, 
+  Pie, 
+  Cell, 
+  ResponsiveContainer, 
+  Tooltip 
+} from 'recharts';
+
+const App = () => {
+  // --- 狀態管理 ---
+  const [view, setView] = useState('list'); // 'list', 'stats', 'settings', 'add'
+  const [isLocked, setIsLocked] = useState(true);
+  const [pin, setPin] = useState(''); 
+  const [savedPin, setSavedPin] = useState(null);
+  const [pinError, setPinError] = useState(false);
+  const [isSettingPin, setIsSettingPin] = useState(false);
+  
+  // 生物辨識相關狀態
+  const [isBiometricEnabled, setIsBiometricEnabled] = useState(false);
+  const [isBiometricSupported, setIsBiometricSupported] = useState(false);
+
+  const [isChangingPin, setIsChangingPin] = useState(false);
+  const [changePinStep, setChangePinStep] = useState(1); 
+
+  const [transactions, setTransactions] = useState([]);
+  const [categories, setCategories] = useState({
+    expense: ['餐飲', '交通', '購物', '娛樂', '居住'],
+    income: ['薪資', '獎金', '投資', '零用錢']
+  });
+  
+  const [categoryColors, setCategoryColors] = useState({
+    '餐飲': '#000000', '交通': '#444444', '購物': '#666666', '娛樂': '#888888', '居住': '#AAAAAA',
+    '薪資': '#000000', '獎金': '#555555', '投資': '#888888', '零用錢': '#BBBBBB'
+  });
+
+  const [filterDate, setFilterDate] = useState(''); 
+  const [editingId, setEditingId] = useState(null);
+  const [type, setType] = useState('expense');
+  const [paymentMethod, setPaymentMethod] = useState('cash'); 
+  const [displayValue, setDisplayValue] = useState('0'); 
+  const [formula, setFormula] = useState(''); 
+  const [note, setNote] = useState('');
+  const [prevValue, setPrevValue] = useState(null);
+  const [operator, setOperator] = useState(null);
+  const [waitingForOperand, setWaitingForOperand] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  
+  const [showCatModal, setShowCatModal] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [catManageType, setCatManageType] = useState('expense');
+  const [showColorPicker, setShowColorPicker] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  
+  const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
+  const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
+
+  // --- 初始化與儲存 ---
+  useEffect(() => {
+    if (window.PublicKeyCredential) {
+      setIsBiometricSupported(true);
+    }
+
+    try {
+      const savedData = localStorage.getItem('mini_account_book_v11');
+      if (savedData) {
+        const parsed = JSON.parse(savedData);
+        setTransactions(parsed.transactions || []);
+        setCategories(parsed.categories || categories);
+        setCategoryColors(parsed.categoryColors || categoryColors);
+        setIsBiometricEnabled(parsed.isBiometricEnabled || false);
+        
+        if (parsed.savedPin) {
+          setSavedPin(parsed.savedPin);
+          setIsSettingPin(false);
+          if (parsed.isBiometricEnabled) {
+            setTimeout(() => {
+              handleBiometricAuth();
+            }, 500);
+          }
+        } else {
+          setIsSettingPin(true);
+        }
+      } else {
+        setIsSettingPin(true);
+      }
+    } catch (e) {
+      console.error("載入失敗", e);
+      setIsSettingPin(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('mini_account_book_v11', JSON.stringify({ 
+      transactions, categories, categoryColors, savedPin, isBiometricEnabled 
+    }));
+  }, [transactions, categories, categoryColors, savedPin, isBiometricEnabled]);
+
+  // --- 導出 CSV 功能 ---
+  const exportToCSV = () => {
+    if (transactions.length === 0) return;
+    const headers = ["日期", "類型", "項目", "金額", "備註", "支付方式"];
+    const rows = transactions.map(t => [
+      t.date,
+      t.type === 'expense' ? '支出' : '收入',
+      t.category,
+      t.amount,
+      t.note || '',
+      t.paymentMethod === 'cash' ? '現金' : '卡片'
+    ]);
+    const csvContent = "\uFEFF" + [headers, ...rows].map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `account_book_export_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // --- 安全驗證 ---
+  const handleBiometricAuth = async () => {
+    if (!window.PublicKeyCredential) return;
+    try {
+      const isAvailable = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+      if (isAvailable) setIsLocked(false);
+    } catch (err) {
+      console.log("生物辨識驗證未完成", err);
+    }
+  };
+
+  const handlePinInput = (num) => {
+    setPinError(false);
+    if (pin.length < 4) {
+      const newPin = pin + num;
+      setPin(newPin);
+      if (newPin.length === 4) {
+        if (isSettingPin) {
+          setSavedPin(newPin);
+          setIsSettingPin(false);
+          setIsLocked(false);
+          setPin('');
+        } else if (isChangingPin) {
+          if (changePinStep === 1) {
+            if (newPin === savedPin) {
+              setChangePinStep(2);
+              setPin('');
+            } else {
+              setPinError(true);
+              setTimeout(() => setPin(''), 500);
+            }
+          } else {
+            setSavedPin(newPin);
+            setIsChangingPin(false);
+            setChangePinStep(1);
+            setPin('');
+            setView('settings');
+          }
+        } else {
+          if (newPin === savedPin) {
+            setIsLocked(false);
+            setPin('');
+          } else {
+            setPinError(true);
+            setTimeout(() => setPin(''), 500);
+          }
+        }
+      }
+    }
+  };
+
+  // --- 數據運算 ---
+  const filteredTransactions = useMemo(() => {
+    return transactions.filter(t => {
+      const d = new Date(t.date);
+      const matchesMonth = d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+      const matchesDay = filterDate ? t.date === filterDate : true;
+      return matchesMonth && matchesDay;
+    }).sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [transactions, currentMonth, currentYear, filterDate]);
+
+  const stats = useMemo(() => {
+    const summary = { income: 0, expense: 0, cash: 0, card: 0, byCategory: {} };
+    transactions.filter(t => {
+      const d = new Date(t.date);
+      return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+    }).forEach(t => {
+      const amount = parseFloat(t.amount);
+      if (t.type === 'income') summary.income += amount;
+      else {
+        summary.expense += amount;
+        summary.byCategory[t.category] = (summary.byCategory[t.category] || 0) + amount;
+      }
+    });
+    transactions.forEach(t => {
+      const amount = parseFloat(t.amount);
+      const factor = t.type === 'income' ? 1 : -1;
+      if (t.paymentMethod === 'cash') summary.cash += (amount * factor);
+      else summary.card += (amount * factor);
+    });
+    return summary;
+  }, [transactions, currentMonth, currentYear]);
+
+  const totalBalance = stats.income - stats.expense;
+
+  const handleKeypad = (key) => {
+    if (/\d/.test(key)) {
+      if (waitingForOperand) { setDisplayValue(key === '00' ? '0' : key); setWaitingForOperand(false); }
+      else {
+        if (key === '00') setDisplayValue(displayValue === '0' ? '0' : displayValue + '00');
+        else setDisplayValue(displayValue === '0' ? key : displayValue + key);
+      }
+    } else if (key === '.') {
+      if (waitingForOperand) { setDisplayValue('0.'); setWaitingForOperand(false); }
+      else if (!displayValue.includes('.')) setDisplayValue(displayValue + '.');
+    } else if (key === 'AC') resetForm();
+    else if (key === 'DEL') setDisplayValue(displayValue.length > 1 ? displayValue.slice(0, -1) : '0');
+    else if (['+', '-', '×', '÷'].includes(key)) {
+      const inputValue = parseFloat(displayValue);
+      if (prevValue == null) setPrevValue(inputValue);
+      else if (operator && !waitingForOperand) {
+        const result = performCalculation(operator, prevValue, displayValue);
+        setPrevValue(result);
+        setDisplayValue(String(result));
+      }
+      setWaitingForOperand(true); setOperator(key);
+      setFormula(`${prevValue == null ? inputValue : (operator && !waitingForOperand ? performCalculation(operator, prevValue, displayValue) : prevValue)} ${key}`);
+    } else if (key === '=') saveTransaction();
+  };
+
+  const performCalculation = (op, v1, v2) => {
+    const n1 = parseFloat(v1), n2 = parseFloat(v2);
+    if (op === '+') return n1 + n2;
+    if (op === '-') return n1 - n2;
+    if (op === '×') return n1 * n2;
+    if (op === '÷') return n1 / n2;
+    return n2;
+  };
+
+  const saveTransaction = () => {
+    let finalVal = displayValue;
+    if (operator && !waitingForOperand) finalVal = String(performCalculation(operator, prevValue, displayValue));
+    const amount = parseFloat(finalVal);
+    if (isNaN(amount) || amount <= 0) return;
+    const txData = { id: editingId || Date.now(), type, amount, category: selectedCategory || (type === 'expense' ? categories.expense[0] : categories.income[0]), date, note: note.trim(), paymentMethod };
+    if (editingId) setTransactions(transactions.map(t => t.id === editingId ? txData : t));
+    else setTransactions([txData, ...transactions]);
+    resetForm(); setView('list');
+  };
+
+  const resetForm = () => {
+    setEditingId(null); setDisplayValue('0'); setFormula(''); setPrevValue(null); setOperator(null); setWaitingForOperand(false);
+    setSelectedCategory(''); setNote(''); setPaymentMethod('cash'); setDate(new Date().toISOString().split('T')[0]);
+  };
+
+  const startEdit = (tx) => {
+    setEditingId(tx.id); setType(tx.type); setDisplayValue(String(tx.amount)); setSelectedCategory(tx.category); setDate(tx.date); setNote(tx.note); setPaymentMethod(tx.paymentMethod); setView('add');
+  };
+
+  const deleteCategory = (typeKey, catName) => {
+    setCategories(prev => ({ ...prev, [typeKey]: prev[typeKey].filter(c => c !== catName) }));
+  };
+
+  // --- 鎖定畫面 UI ---
+  if (isLocked || isChangingPin) {
+    return (
+      <div className="max-w-md mx-auto h-screen bg-black flex flex-col items-center justify-center p-8 text-white font-sans">
+        <div className="mb-12 text-center">
+          <div className="w-16 h-16 bg-white/10 rounded-full flex items-center justify-center mx-auto mb-4">
+            {isSettingPin ? <ShieldCheck size={32} /> : isChangingPin ? <KeyRound size={32} /> : <Lock size={32} />}
+          </div>
+          <h2 className="text-xl font-black tracking-tighter">
+            {isSettingPin ? "設定存取密碼" : isChangingPin ? (changePinStep === 1 ? "輸入舊密碼" : "輸入新密碼") : "安全驗證"}
+          </h2>
+          <p className="text-[10px] text-gray-500 mt-2 font-bold uppercase tracking-widest">請輸入 4 位數密碼</p>
+        </div>
+        <div className="flex space-x-4 mb-16 relative items-center">
+          {[0, 1, 2, 3].map(i => (
+            <div key={i} className={`w-3 h-3 rounded-full border-2 border-white/20 transition-all duration-300 ${pin.length > i ? 'bg-white border-white scale-125' : ''} ${pinError ? 'bg-red-500 border-red-500 animate-bounce' : ''}`} />
+          ))}
+          {!isSettingPin && !isChangingPin && isBiometricEnabled && (
+             <button onClick={handleBiometricAuth} className="absolute -right-12 p-2 bg-white/5 rounded-full hover:bg-white/10 active:scale-90 transition-all">
+                <ScanFace size={24} className="text-white" />
+             </button>
+          )}
+        </div>
+        <div className="grid grid-cols-3 gap-8 w-full max-w-[280px]">
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => (
+            <button key={n} onClick={() => handlePinInput(n.toString())} className="w-full aspect-square rounded-full flex items-center justify-center text-2xl font-black active:bg-white active:text-black">{n}</button>
+          ))}
+          <button onClick={() => { if(isChangingPin) { setIsChangingPin(false); setPin(''); setView('settings'); } }} className={`w-full aspect-square flex items-center justify-center text-gray-500 ${!isChangingPin ? 'invisible' : ''}`}>取消</button>
+          <button onClick={() => handlePinInput('0')} className="w-full aspect-square rounded-full flex items-center justify-center text-2xl font-black active:bg-white active:text-black">0</button>
+          <button onClick={() => setPin(pin.slice(0, -1))} className="w-full aspect-square flex items-center justify-center text-gray-500"><Delete size={24} /></button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md mx-auto h-screen bg-white flex flex-col font-sans text-black border-x border-gray-100 overflow-hidden relative">
+      
+      {/* Header - 僅在非新增頁面顯示 */}
+      {view !== 'add' && (
+        <header className="p-5 flex justify-between items-center bg-white shrink-0">
+          <h1 className="text-2xl font-black tracking-tighter">
+            {view === 'settings' ? '系統設定' : view === 'stats' ? '消費分析' : '我的帳本'}
+          </h1>
+          {view === 'list' && (
+            <div className="bg-gray-50 px-3 py-1.5 rounded-full flex items-center space-x-1">
+               <button onClick={() => { const d = new Date(currentYear, currentMonth - 1); setCurrentMonth(d.getMonth()); setCurrentYear(d.getFullYear()); }}><ChevronLeft size={16}/></button>
+               <span className="text-[10px] font-black">{currentYear}.{String(currentMonth + 1).padStart(2,'0')}</span>
+               <button onClick={() => { const d = new Date(currentYear, currentMonth + 1); setCurrentMonth(d.getMonth()); setCurrentYear(d.getFullYear()); }}><ChevronRight size={16}/></button>
+            </div>
+          )}
+        </header>
+      )}
+
+      {/* 主要內容區 */}
+      <main className={`flex-1 overflow-y-auto ${view === 'add' ? 'pb-0' : 'pb-32'}`}>
+        {view === 'list' && (
+          <div className="px-5 space-y-6">
+            <div className="bg-black text-white p-6 rounded-[2.5rem] shadow-2xl relative overflow-hidden">
+               <div className="relative z-10">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="text-[10px] opacity-40 font-black uppercase tracking-widest mb-1">本月結餘</p>
+                      <p className={`text-4xl font-black ${totalBalance >= 0 ? 'text-white' : 'text-red-400'}`}>${totalBalance.toLocaleString()}</p>
+                    </div>
+                    <div className="text-right">
+                       <div className="flex items-center justify-end text-emerald-400 space-x-1">
+                          <span className="text-[10px] font-black uppercase tracking-tighter">收入</span>
+                          <ArrowUpRight size={12}/>
+                       </div>
+                       <p className="text-sm font-black text-white">+${stats.income.toLocaleString()}</p>
+                       <div className="flex items-center justify-end text-red-400 space-x-1 mt-1">
+                          <span className="text-[10px] font-black uppercase tracking-tighter">支出</span>
+                          <ArrowDownLeft size={12}/>
+                       </div>
+                       <p className="text-sm font-black text-white">-${stats.expense.toLocaleString()}</p>
+                    </div>
+                  </div>
+                  <div className="mt-6 grid grid-cols-2 gap-4 border-t border-white/10 pt-5">
+                    <div className="bg-white/5 rounded-2xl p-3">
+                      <p className="text-[9px] opacity-40 font-bold mb-1 uppercase tracking-tighter flex items-center"><Banknote size={10} className="mr-1 text-emerald-400"/> 現金餘額</p>
+                      <p className={`text-lg font-black ${stats.cash >= 0 ? 'text-white' : 'text-red-400'}`}>${stats.cash.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-white/5 rounded-2xl p-3">
+                      <p className="text-[9px] opacity-40 font-bold mb-1 uppercase tracking-tighter flex items-center"><CreditCard size={10} className="mr-1 text-blue-400"/> 卡片餘額</p>
+                      <p className={`text-lg font-black ${stats.card >= 0 ? 'text-white' : 'text-red-400'}`}>${stats.card.toLocaleString()}</p>
+                    </div>
+                  </div>
+               </div>
+               <div className="absolute -right-8 -bottom-8 opacity-5 rotate-12"><Wallet size={120} /></div>
+            </div>
+
+            {/* 新增資料按鈕 */}
+            <button 
+              onClick={() => { resetForm(); setView('add'); }} 
+              className="w-full flex items-center justify-center space-x-3 p-6 bg-black text-white rounded-[2rem] shadow-xl active:scale-[0.98] transition-all group"
+            >
+              <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center group-hover:rotate-90 transition-transform">
+                <Plus size={20} />
+              </div>
+              <span className="text-sm font-black tracking-widest uppercase">新增一筆帳目</span>
+            </button>
+            
+            {/* 日期選擇器：現在位於新增按鈕下方 */}
+            <div className="flex items-center space-x-2 bg-gray-50 p-2 rounded-2xl">
+              <div className="p-2 text-gray-400"><Filter size={14}/></div>
+              <input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="bg-transparent text-xs font-black flex-1 outline-none" />
+              {filterDate && <button onClick={() => setFilterDate('')} className="p-2 text-gray-300 hover:text-black"><X size={14}/></button>}
+            </div>
+
+            <div className="space-y-4">
+              <p className="text-[10px] font-black text-gray-300 uppercase tracking-widest ml-1">{filterDate ? `${filterDate} 紀錄` : '最近帳目'}</p>
+              {filteredTransactions.length === 0 ? <div className="text-center py-12 text-gray-300 font-bold">沒有找到紀錄</div> : (
+                filteredTransactions.map(t => (
+                  <div key={t.id} onClick={() => startEdit(t)} className="flex items-center justify-between p-4 bg-white border border-gray-50 rounded-3xl active:scale-95 transition-all cursor-pointer">
+                    <div className="flex items-center space-x-4">
+                      <div className="w-11 h-11 rounded-2xl flex items-center justify-center text-white font-black text-lg" style={{ backgroundColor: categoryColors[t.category] || '#000' }}>{t.category[0]}</div>
+                      <div>
+                        <div className="flex items-center space-x-2"><p className="font-black text-sm">{t.category}</p>{t.paymentMethod === 'card' ? <CreditCard size={10} className="text-blue-500"/> : <Banknote size={10} className="text-emerald-500"/>}</div>
+                        <p className="text-[10px] text-gray-400 font-bold uppercase">{t.date.split('-').slice(1).join('/')} {t.note && `· ${t.note}`}</p>
+                      </div>
+                    </div>
+                    <p className={`font-black ${t.type === 'expense' ? 'text-black' : 'text-emerald-500'}`}>{t.type === 'expense' ? '-' : '+'}${t.amount.toLocaleString()}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {view === 'add' && (
+          <div className="fixed inset-0 bg-white z-[200] flex flex-col animate-in slide-in-from-bottom duration-300">
+             <div className="p-6 pt-12 space-y-6 flex-1 overflow-y-auto">
+                <div className="flex justify-between items-center">
+                  <button onClick={() => { resetForm(); setView('list'); }} className="p-3 bg-gray-50 rounded-full active:scale-90 transition-all"><X size={24}/></button>
+                  <div className="flex bg-gray-100 p-1 rounded-full w-36 relative h-10 items-center">
+                    <div className={`absolute h-8 w-[68px] bg-black rounded-full transition-all duration-300`} style={{ left: type === 'expense' ? '4px' : 'calc(100% - 72px)' }} />
+                    <button onClick={() => { setType('expense'); setSelectedCategory(''); }} className={`relative z-10 flex-1 text-xs font-black ${type === 'expense' ? 'text-white' : 'text-gray-400'}`}>支出</button>
+                    <button onClick={() => { setType('income'); setSelectedCategory(''); }} className={`relative z-10 flex-1 text-xs font-black ${type === 'income' ? 'text-white' : 'text-gray-400'}`}>收入</button>
+                  </div>
+                  <button onClick={saveTransaction} className="p-3 bg-black text-white rounded-full active:scale-90 transition-all shadow-lg"><Check size={24}/></button>
+                </div>
+                <div className="text-right py-4">
+                  <p className="text-sm text-gray-300 font-mono h-5 mb-1">{formula}</p>
+                  <div className="text-7xl font-black tracking-tighter truncate leading-tight"><span className="text-3xl mr-1 text-gray-200">$</span>{displayValue}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-gray-50 rounded-2xl px-5 py-4 flex items-center border border-transparent focus-within:border-black transition-all"><Calendar size={16} className="mr-3 text-gray-400"/><input type="date" value={date} onChange={e => setDate(e.target.value)} className="bg-transparent text-sm font-black outline-none w-full" /></div>
+                  <div className="bg-gray-50 rounded-2xl px-5 py-4 flex items-center border border-transparent focus-within:border-black transition-all"><FileText size={16} className="mr-3 text-gray-400"/><input type="text" placeholder="點擊輸入備註..." value={note} onChange={e => setNote(e.target.value)} className="bg-transparent text-sm font-black outline-none w-full" /></div>
+                </div>
+                <div className="flex space-x-2">
+                  <button onClick={() => setPaymentMethod('cash')} className={`flex-1 py-4 rounded-2xl border flex items-center justify-center space-x-2 text-xs font-black transition-all ${paymentMethod === 'cash' ? 'bg-black text-white border-black shadow-lg scale-105' : 'bg-white text-gray-400 border-gray-100'}`}><Banknote size={16}/><span>使用現金</span></button>
+                  <button onClick={() => setPaymentMethod('card')} className={`flex-1 py-4 rounded-2xl border flex items-center justify-center space-x-2 text-xs font-black transition-all ${paymentMethod === 'card' ? 'bg-black text-white border-black shadow-lg scale-105' : 'bg-white text-gray-400 border-gray-100'}`}><CreditCard size={16}/><span>刷卡/轉帳</span></button>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-2">
+                  {categories[type].map(cat => (
+                    <button key={cat} onClick={() => setSelectedCategory(cat)} className={`px-5 py-3 rounded-full border text-xs font-black transition-all active:scale-90 ${selectedCategory === cat ? 'bg-black text-white border-black shadow-md' : 'bg-white text-gray-400 border-gray-100'}`} style={selectedCategory === cat ? { backgroundColor: categoryColors[cat], borderColor: categoryColors[cat] } : {}}>{cat}</button>
+                  ))}
+                  <button onClick={() => { setCatManageType(type); setShowCatModal(true); }} className="w-10 h-10 rounded-full border border-dashed border-gray-200 flex items-center justify-center text-gray-300 hover:text-black transition-all"><Plus size={18}/></button>
+                </div>
+             </div>
+             {/* 計算按鍵 */}
+             <div className="bg-gray-50 p-3 grid grid-cols-5 gap-2 pb-10">
+                {['7','8','9','÷','AC','4','5','6','×','DEL','1','2','3','-','=','00','0','.','+'].map(k => (
+                  <button key={k} onClick={() => handleKeypad(k)} className={`h-16 rounded-2xl flex items-center justify-center text-xl font-black shadow-sm active:scale-95 transition-all ${k === '=' ? 'row-span-2 h-full bg-black text-white' : 'bg-white text-black'}`}>{k === 'DEL' ? <Delete size={24}/> : k}</button>
+                ))}
+             </div>
+          </div>
+        )}
+
+        {view === 'settings' && (
+          <div className="p-6 space-y-8 animate-in fade-in duration-500">
+             <section className="space-y-4">
+               <div className="flex justify-between items-end"><h3 className="text-[10px] font-black text-gray-300 uppercase tracking-widest">標籤管理</h3><div className="flex bg-gray-100 p-1 rounded-full w-24 relative h-7 items-center"><div className={`absolute h-5 w-[42px] bg-black rounded-full transition-all duration-300`} style={{ left: catManageType === 'expense' ? '4px' : 'calc(100% - 46px)' }} /><button onClick={() => setCatManageType('expense')} className={`relative z-10 flex-1 text-[9px] font-black ${catManageType === 'expense' ? 'text-white' : 'text-gray-400'}`}>支出</button><button onClick={() => setCatManageType('income')} className={`relative z-10 flex-1 text-[9px] font-black ${catManageType === 'income' ? 'text-white' : 'text-gray-400'}`}>收入</button></div></div>
+               <div className="bg-gray-50 rounded-[2rem] p-4 space-y-2">
+                 {categories[catManageType].map(cat => (
+                   <div key={cat} className="flex items-center justify-between p-3 bg-white rounded-2xl group"><div className="flex items-center space-x-3"><button onClick={() => setShowColorPicker(cat)} className="w-6 h-6 rounded-full border-2 border-white shadow-sm" style={{ backgroundColor: categoryColors[cat] || '#000' }} /><span className="text-xs font-black">{cat}</span></div><button onClick={() => deleteCategory(catManageType, cat)} className="p-2 text-gray-100 group-hover:text-red-500 transition-colors"><Trash2 size={14}/></button></div>
+                 ))}
+                 <button onClick={() => setShowCatModal(true)} className="w-full py-3 border border-dashed border-gray-200 rounded-2xl flex items-center justify-center text-gray-300 hover:text-black transition-all"><Plus size={16}/></button>
+               </div>
+             </section>
+             <section className="space-y-4">
+               <h3 className="text-[10px] font-black text-gray-300 uppercase tracking-widest">系統與安全</h3>
+               <div className="grid grid-cols-1 gap-2">
+                 <button onClick={exportToCSV} className="w-full flex items-center justify-between p-5 bg-black text-white rounded-[1.5rem] active:scale-95 transition-all"><div className="flex items-center space-x-3"><Share size={18}/><span className="text-xs font-black">導出為 CSV 檔案</span></div><Download size={16}/></button>
+                 {isBiometricSupported && (
+                    <button onClick={() => setIsBiometricEnabled(!isBiometricEnabled)} className={`w-full flex items-center justify-between p-5 border rounded-[1.5rem] active:scale-95 transition-all ${isBiometricEnabled ? 'bg-black text-white border-black' : 'bg-white text-black border-gray-100'}`}>
+                      <div className="flex items-center space-x-3"><ScanFace size={18}/><span className="text-xs font-black">使用 FaceID / 生物辨識</span></div>
+                      <div className={`w-8 h-4 rounded-full relative transition-colors ${isBiometricEnabled ? 'bg-emerald-500' : 'bg-gray-200'}`}><div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${isBiometricEnabled ? 'right-0.5' : 'left-0.5'}`} /></div>
+                    </button>
+                 )}
+                 <button onClick={() => { setIsChangingPin(true); setChangePinStep(1); setPin(''); }} className="w-full flex items-center justify-between p-5 bg-white border border-gray-100 rounded-[1.5rem] active:scale-95 transition-all"><span className="text-xs font-black">變更存取密碼 (PIN)</span><KeyRound size={16}/></button>
+                 <button onClick={() => setShowDeleteConfirm(true)} className="w-full flex items-center justify-between p-5 bg-red-50 text-red-500 rounded-[1.5rem] active:scale-95 transition-all"><span className="text-xs font-black">清除所有帳目資料</span><AlertTriangle size={16}/></button>
+               </div>
+             </section>
+          </div>
+        )}
+        
+        {view === 'stats' && (
+           <div className="p-6 space-y-8 animate-in fade-in duration-500">
+             <div className="flex justify-between items-end"><h2 className="text-xl font-black">消費結構</h2><p className="text-[10px] font-black text-gray-300 uppercase tracking-widest">{currentYear}.{String(currentMonth + 1).padStart(2,'0')}</p></div>
+             <div className="h-64">
+               <ResponsiveContainer width="100%" height="100%">
+                 <PieChart>
+                   <Pie data={Object.keys(stats.byCategory).map(c => ({ name: c, value: stats.byCategory[c] }))} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={4} dataKey="value" stroke="none">
+                    {Object.keys(stats.byCategory).map((c, i) => <Cell key={i} fill={categoryColors[c] || '#000'} />)}
+                   </Pie>
+                   <Tooltip contentStyle={{ borderRadius: '20px', border: 'none', fontWeight: '900', fontSize: '12px' }} />
+                 </PieChart>
+               </ResponsiveContainer>
+             </div>
+             <div className="space-y-2">
+               {Object.keys(stats.byCategory).sort((a,b) => stats.byCategory[b] - stats.byCategory[a]).map(c => {
+                 const percentage = ((stats.byCategory[c] / stats.expense) * 100).toFixed(1);
+                 return (
+                  <div key={c} className="flex items-center justify-between p-4 bg-gray-50 rounded-3xl">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: categoryColors[c] }} />
+                      <div className="flex flex-col"><span className="text-xs font-black">{c}</span><span className="text-[9px] text-gray-400 font-bold">{percentage}%</span></div>
+                    </div>
+                    <span className="text-xs font-black">${stats.byCategory[c].toLocaleString()}</span>
+                  </div>
+                 );
+               })}
+               {stats.expense === 0 && <div className="text-center py-10 text-gray-300 font-bold">本月尚無支出數據</div>}
+             </div>
+          </div>
+        )}
+      </main>
+
+      {/* 底部導航欄 */}
+      {view !== 'add' && (
+        <nav className="fixed bottom-0 left-0 right-0 h-20 bg-white/80 backdrop-blur-xl border-t border-gray-50 flex z-50">
+          <button 
+            onClick={() => { setFilterDate(''); setView('list'); }} 
+            className={`flex-1 flex flex-col items-center justify-center space-y-1 transition-colors ${view === 'list' ? 'text-black' : 'text-gray-300'}`}
+          >
+            <List size={22} /><span className="text-[9px] font-black uppercase tracking-tighter">明細</span>
+          </button>
+
+          <button 
+            onClick={() => setView('stats')} 
+            className={`flex-1 flex flex-col items-center justify-center space-y-1 transition-colors ${view === 'stats' ? 'text-black' : 'text-gray-300'}`}
+          >
+            <PieChartIcon size={22} /><span className="text-[9px] font-black uppercase tracking-tighter">分析</span>
+          </button>
+
+          <button 
+            onClick={() => setView('settings')} 
+            className={`flex-1 flex flex-col items-center justify-center space-y-1 transition-colors ${view === 'settings' ? 'text-black' : 'text-gray-300'}`}
+          >
+            <Settings size={22} /><span className="text-[9px] font-black uppercase tracking-tighter">設定</span>
+          </button>
+        </nav>
+      )}
+
+      {/* Modals */}
+      {showCatModal && (
+        <div className="fixed inset-0 bg-black/60 z-[300] flex items-center justify-center p-6 backdrop-blur-md"><div className="bg-white rounded-[3rem] p-10 w-full max-w-xs text-center"><h3 className="text-xl font-black mb-6">新增標籤</h3><input autoFocus className="w-full border-b-2 border-black py-2 mb-8 outline-none text-lg font-black text-center" placeholder="標籤名稱" onChange={e => setNewCatName(e.target.value)} /><div className="flex space-x-3"><button onClick={() => setShowCatModal(false)} className="flex-1 py-4 bg-gray-100 rounded-2xl font-black text-xs">取消</button><button onClick={() => { if (!newCatName.trim()) return; setCategories(prev => ({ ...prev, [catManageType]: [...prev[catManageType], newCatName] })); setCategoryColors(prev => ({ ...prev, [newCatName]: '#000000' })); setShowCatModal(false); setNewCatName(''); }} className="flex-1 py-4 bg-black text-white rounded-2xl font-black text-xs">確認</button></div></div></div>
+      )}
+      {showColorPicker && (
+        <div className="fixed inset-0 bg-black/40 z-[300] flex items-end justify-center backdrop-blur-sm"><div className="bg-white rounded-t-[3rem] p-10 w-full max-w-md"><div className="flex justify-between items-center mb-8"><h3 className="text-xl font-black">選擇顏色</h3><button onClick={() => setShowColorPicker(null)} className="p-2 bg-gray-100 rounded-full"><X size={20}/></button></div><div className="grid grid-cols-6 gap-4 mb-10">{['#000000', '#444444', '#888888', '#CCCCCC', '#FF4D4D', '#FF9F43', '#FFD93D', '#6BCB77', '#4D96FF', '#A29BFE', '#F78FB3', '#30336B'].map(c => (<button key={c} onClick={() => { setCategoryColors(prev => ({ ...prev, [showColorPicker]: c })); setShowColorPicker(null); }} className="w-full aspect-square rounded-2xl" style={{ backgroundColor: c }} />))}</div></div></div>
+      )}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/90 z-[300] flex items-center justify-center p-10"><div className="bg-white rounded-[3rem] p-10 text-center"><AlertTriangle size={48} className="mx-auto text-red-500 mb-6" /><h3 className="text-2xl font-black mb-2">清除所有資料？</h3><p className="text-xs text-gray-400 mb-10">此操作將永久刪除所有記帳紀錄。</p><button onClick={() => { setTransactions([]); setShowDeleteConfirm(false); setView('list'); }} className="w-full py-4 bg-red-500 text-white rounded-2xl font-black mb-2 text-xs">確定刪除</button><button onClick={() => setShowDeleteConfirm(false)} className="w-full py-4 text-gray-300 font-black text-xs">取消</button></div></div>
+      )}
+    </div>
+  );
+};
+
+export default App;
+
+
